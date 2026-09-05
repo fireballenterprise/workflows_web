@@ -1,0 +1,166 @@
+---
+name: Deploy
+run-name: "Deploy to ${{ inputs.env }}"
+
+# Reusable — build a Vite static site and ship dist/ to its S3 bucket + invalidate CloudFront.
+# Bucket + distribution id are read from the CloudFormation stack's BucketName / DistributionId
+# outputs (one workflow serves a dev and a prd instance). Deploy auth is AWS OIDC — the caller
+# passes the IAM role ARNs and stack names as inputs, no AWS secrets.
+#
+# On a dev deploy (or a single-branch site) the VERSION patch is bumped first, committed
+# `[skip ci]` with GITHUB_TOKEN (landing repos have no branch protection). A single-branch site
+# also tags + publishes the GitHub Release here — it has no separate release.yml.
+
+on:
+  workflow_call:
+    inputs:
+      env:
+        description: 'Environment (dev or prd)'
+        required: false
+        type: string
+        default: dev
+      single_branch:
+        description: 'Site releases straight off main (no development branch)'
+        required: false
+        type: boolean
+        default: false
+      sync_package_json:
+        description: 'Mirror VERSION into package.json + package-lock.json'
+        required: false
+        type: boolean
+        default: false
+      node_version:
+        description: 'Node version'
+        required: false
+        type: string
+        default: '24'
+      aws_region:
+        description: 'AWS region'
+        required: false
+        type: string
+        default: us-east-1
+      aws_role_dev:
+        description: 'IAM role ARN for dev deploys (OIDC)'
+        required: false
+        type: string
+        default: ''
+      aws_role_prd:
+        description: 'IAM role ARN for prd deploys (OIDC)'
+        required: true
+        type: string
+      stack_dev:
+        description: 'CloudFormation stack name for the dev instance'
+        required: false
+        type: string
+        default: ''
+      stack_prd:
+        description: 'CloudFormation stack name for the prd instance'
+        required: true
+        type: string
+
+jobs:
+  # 🔢 Bump VERSION (dev deploys + single-branch sites); single-branch also tags + releases here
+  version:
+    if: >-
+      ${{ (inputs.env == 'dev' || inputs.single_branch)
+          && !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    concurrency: version-bump-${{ inputs.single_branch && 'main' || 'development' }}
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+    env:
+      SYNC_PKG: ${{ inputs.sync_package_json }}
+      SINGLE_BRANCH: ${{ inputs.single_branch }}
+      WORK_BRANCH: ${{ inputs.single_branch && 'main' || 'development' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.single_branch && 'main' || 'development' }}
+
+      - name: Bump VERSION patch
+        id: bump
+        uses: fireballenterprise/workflows_common/actions/bump_version@v1
+        with:
+          part: patch
+
+      - name: Commit, and tag + release for a single-branch site
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "Levon Becker"
+          git config user.email "LevonBecker@users.noreply.github.com"
+          paths="VERSION"
+          if [ "$SYNC_PKG" = "true" ]; then
+            node -e "const p=require('./package.json');p.version='$NEW_VERSION';require('fs').writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+            npm install --package-lock-only --ignore-scripts
+            paths="$paths package.json package-lock.json"
+          fi
+          # shellcheck disable=SC2086
+          git add $paths
+          git commit -m "chore: bump VERSION to $NEW_VERSION [skip ci]"
+          if [ "$SINGLE_BRANCH" = "true" ]; then
+            git tag "$NEW_VERSION"
+            git push origin "HEAD:$WORK_BRANCH" "$NEW_VERSION"
+            gh release create "$NEW_VERSION" --target main --title "$NEW_VERSION" --generate-notes
+          else
+            git push origin "HEAD:$WORK_BRANCH"
+          fi
+
+  # 🚀 Build + ship
+  deploy:
+    needs: version
+    if: ${{ !cancelled() && !failure() }}  # run even when the version job is skipped (two-branch prd)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # AWS OIDC
+    env:
+      DEPLOY_ENV: ${{ inputs.env }}
+      STACK: ${{ inputs.env == 'prd' && inputs.stack_prd || inputs.stack_dev }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.single_branch && 'main' || (inputs.env == 'prd' && 'main' || 'development') }}
+          lfs: true
+
+      - name: Report version
+        run: echo "### Deploying $(cat VERSION) to $DEPLOY_ENV" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - name: Build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ inputs.env == 'prd' && inputs.aws_role_prd || inputs.aws_role_dev }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Look up stack outputs
+        id: stack
+        run: |
+          bucket="$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='BucketName'].OutputValue" --output text)"
+          distribution_id="$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" --output text)"
+          echo "bucket=$bucket" >> "$GITHUB_OUTPUT"
+          echo "distribution_id=$distribution_id" >> "$GITHUB_OUTPUT"
+
+      - name: Sync to S3
+        run: aws s3 sync dist/ "s3://${{ steps.stack.outputs.bucket }}" --delete
+
+      - name: Invalidate CloudFront
+        run: >-
+          aws cloudfront create-invalidation
+          --distribution-id "${{ steps.stack.outputs.distribution_id }}"
+          --paths "/*"

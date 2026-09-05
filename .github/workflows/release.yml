@@ -1,0 +1,69 @@
+---
+name: Release
+run-name: "Release (${{ inputs.bump }})"
+
+# Reusable — two-branch landing sites (fireball_sidecar_landing): promote development -> main,
+# deploy prd, publish a GitHub Release. Single-branch sites release through deploy.yml instead.
+# The version / promote / release steps are workflows_common; deploy is this repo's deploy.yml.
+
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: 'Milestone bump on development before promoting (none | patch | minor | major)'
+        required: false
+        type: string
+        default: none
+      node_version:
+        required: false
+        type: string
+        default: '24'
+      aws_region:
+        required: false
+        type: string
+        default: us-east-1
+      aws_role_prd:
+        description: 'IAM role ARN for prd deploys (OIDC)'
+        required: true
+        type: string
+      stack_prd:
+        description: 'CloudFormation stack name for the prd instance'
+        required: true
+        type: string
+
+jobs:
+  version:
+    uses: fireballenterprise/workflows_common/.github/workflows/resolve_version.yml@v1
+    with:
+      bump: ${{ inputs.bump }}
+      branch: development
+    secrets: inherit
+
+  promote:
+    needs: version
+    uses: fireballenterprise/workflows_common/.github/workflows/promote.yml@v1
+    secrets: inherit
+
+  deploy:
+    needs: promote
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy.yml
+    with:
+      env: prd
+      node_version: ${{ inputs.node_version }}
+      aws_region: ${{ inputs.aws_region }}
+      aws_role_prd: ${{ inputs.aws_role_prd }}
+      stack_prd: ${{ inputs.stack_prd }}
+    secrets: inherit
+
+  publish_release:
+    needs: [version, deploy]
+    uses: fireballenterprise/workflows_common/.github/workflows/github_release.yml@v1
+    with:
+      version: ${{ needs.version.outputs.version }}
+      ref: main
+      tag: false  # `gh release create` creates the X.Y.Z tag on main as a side effect
+      v_prefix: false
+    secrets: inherit

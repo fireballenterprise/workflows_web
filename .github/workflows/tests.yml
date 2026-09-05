@@ -1,0 +1,43 @@
+---
+name: Tests
+run-name: "Tests (${{ github.head_ref || github.ref_name }})"
+
+# Reusable — a static-site repo's PR check: install deps and run the production build.
+# Call from a landing repo on `pull_request`.
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: 'Node version'
+        required: false
+        type: string
+        default: '24'
+      lfs:
+        description: 'Checkout Git LFS objects'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check Out Code
+        uses: actions/checkout@v7
+        with:
+          lfs: ${{ inputs.lfs }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
