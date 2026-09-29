@@ -1,7 +1,7 @@
 # Fireball Enterprise — Web / Landing Workflows
 
-Shared GitHub Actions reusable workflows for the family's **static landing sites** (Vite build →
-S3 → CloudFront): `fireball_enterprise_landing`, `fireball_sidecar_landing`. Peer to
+Shared GitHub Actions reusable workflows for the family's **static sites** (Vite build → S3 →
+CloudFront): `fireball_designer_web`, `fireball_fabrication_web`, `fireball_filming_web`. Peer to
 [`workflows_shopify`](https://github.com/fireballenterprise/workflows_shopify); the shared
 version / promote / release primitives live in
 [`workflows_common`](https://github.com/fireballenterprise/workflows_common).
@@ -25,7 +25,7 @@ version / promote / release primitives live in
 - **Deploy auth**: AWS OIDC only — the caller passes IAM role ARNs + CFN stack names as `with:`
   inputs. **No secrets or variables.** The CFN stack must expose `BucketName` + `DistributionId`
   outputs and its deploy role must allow `cloudformation:DescribeStacks`.
-- **Git auth**: landing repos have no branch protection → the version bump commits with the
+- **Git auth**: the static-site repos have no branch protection → the version bump commits with the
   default `GITHUB_TOKEN`, authored `Levon Becker <LevonBecker@users.noreply.github.com>`. Do not
   set `vars.BOT_APP_ID`.
 - **Files**: `package.json` with a `build` script producing `dist/`, `VERSION` (plain `X.Y.Z`),
@@ -33,22 +33,26 @@ version / promote / release primitives live in
 
 ## Thin callers
 
-`fireball_enterprise_landing` (single-branch):
+`fireball_fabrication_web` (two-branch; Filming and Designer are the same shape):
 ```yaml
 # .github/workflows/deploy.yml
-on: {workflow_dispatch: {}, push: {branches: [main], paths-ignore: [VERSION]}}
+on:
+  push: {branches: [development]}
+  workflow_dispatch: {inputs: {env: {type: choice, default: dev, options: [dev, prd]}}}
 jobs:
   deploy:
     permissions: {contents: write, id-token: write}
+    if: ${{ vars.ENABLE_CI == 'true' }}
     uses: fireballenterprise/workflows_web/.github/workflows/deploy.yml@v1
     with:
-      env: prd
-      single_branch: true
-      sync_package_json: true
-      aws_role_prd: arn:aws:iam::213533013207:role/fireball-enterprise-landing-deploy
-      stack_prd: fireball-landing-prd
+      env: ${{ inputs.env || 'dev' }}
+      aws_role_dev: arn:aws:iam::213533013207:role/fireball-fabrication-web-dev-deploy
+      aws_role_prd: arn:aws:iam::213533013207:role/fireball-fabrication-web-deploy
+      stack_dev: fireball-fabrication-web-dev
+      stack_prd: fireball-fabrication-web-prd
     secrets: inherit
 ```
 
-`fireball_sidecar_landing` (two-branch) additionally has a `release.yml` caller of
-`release.yml@v1`.
+Each also has a `tests.yml` caller of `tests.yml@v1` and a `release.yml` caller of
+`release.yml@v1`. `single_branch: true` (bump, deploy prd and release from `main` alone) is still
+supported but no current site uses it.
