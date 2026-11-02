@@ -16,13 +16,13 @@ version / promote / release primitives live in
 | workflow | inputs | does |
 |---|---|---|
 | `tests.yml` | `node_version` (24), `lfs` (true) | `npm ci` + `npm run build` — the PR check |
-| `deploy.yml` | `env` (dev\|prd), `single_branch` (false), `sync_package_json` (false), `node_version`, `aws_region`, `aws_role_dev`, `aws_role_prd` (req), `stack_dev`, `stack_prd` (req) | bump VERSION (dev / single-branch), build, assume the OIDC role, read `BucketName`/`DistributionId` from the CFN stack, `aws s3 sync dist/ --delete`, `aws cloudfront create-invalidation "/*"`. A single-branch site also tags + publishes the Release here. |
+| `deploy.yml` | `env` (dev\|prd), `single_branch` (false), `sync_package_json` (false), `node_version`, `aws_region`, `aws_account_dev` (726085025386), `aws_account_prd` (213533013207), `aws_role_dev`, `aws_role_prd` (req; a bare role name or a full ARN), `stack_dev`, `stack_prd` (req) | bump VERSION (dev / single-branch), build, assume the OIDC role, read `BucketName`/`DistributionId` from the CFN stack, `aws s3 sync dist/ --delete`, `aws cloudfront create-invalidation "/*"`. A single-branch site also tags + publishes the Release here. |
 | `release.yml` | `bump` (none), `node_version`, `aws_region`, `aws_role_prd` (req), `stack_prd` (req) | two-branch sites: `resolve_version` → `promote` (development → main) → `deploy` prd → GitHub Release |
 
 ## Caller requirements
 - **Branches**: single-branch site = `main` only; two-branch site = `development` (working) +
   `main` (production).
-- **Deploy auth**: AWS OIDC only — the caller passes IAM role ARNs + CFN stack names as `with:`
+- **Deploy auth**: AWS OIDC only — the caller passes IAM role names (or ARNs) + CFN stack names as `with:`
   inputs. **No secrets or variables.** The CFN stack must expose `BucketName` + `DistributionId`
   outputs and its deploy role must allow `cloudformation:DescribeStacks`.
 - **Git auth**: the static-site repos have no branch protection → the version bump commits with the
@@ -46,8 +46,8 @@ jobs:
     uses: fireballenterprise/workflows_web/.github/workflows/deploy.yml@v1
     with:
       env: ${{ inputs.env || 'dev' }}
-      aws_role_dev: arn:aws:iam::213533013207:role/fireball-fabrication-web-dev-deploy
-      aws_role_prd: arn:aws:iam::213533013207:role/fireball-fabrication-web-deploy
+      aws_role_dev: fireball-fabrication-web-dev-deploy      # a bare name: the account comes from aws_account_dev (726085025386)
+      aws_role_prd: fireball-fabrication-web-deploy          # prd account (213533013207)
       stack_dev: fireball-fabrication-web-dev
       stack_prd: fireball-fabrication-web-prd
     secrets: inherit
