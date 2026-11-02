@@ -39,13 +39,23 @@ on:
         required: false
         type: string
         default: us-east-1
+      aws_account_dev:
+        description: 'AWS account id of the dev environment (used when a role is given as a bare name)'
+        required: false
+        type: string
+        default: '726085025386'
+      aws_account_prd:
+        description: 'AWS account id of the prd environment (used when a role is given as a bare name)'
+        required: false
+        type: string
+        default: '213533013207'
       aws_role_dev:
-        description: 'IAM role ARN for dev deploys (OIDC)'
+        description: 'IAM role for dev deploys (OIDC): a bare role name (account from aws_account_dev) or a full ARN'
         required: false
         type: string
         default: ''
       aws_role_prd:
-        description: 'IAM role ARN for prd deploys (OIDC)'
+        description: 'IAM role for prd deploys (OIDC): a bare role name (account from aws_account_prd) or a full ARN'
         required: true
         type: string
       stack_dev:
@@ -140,10 +150,22 @@ jobs:
           npm ci
           npm run build
 
+      - name: Resolve the deploy role
+        id: role
+        env:
+          ROLE: ${{ inputs.env == 'prd' && inputs.aws_role_prd || inputs.aws_role_dev }}
+          ACCOUNT: ${{ inputs.env == 'prd' && inputs.aws_account_prd || inputs.aws_account_dev }}
+        run: |
+          case "$ROLE" in
+            arn:*) arn="$ROLE" ;;
+            *) arn="arn:aws:iam::${ACCOUNT}:role/${ROLE}" ;;
+          esac
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ inputs.env == 'prd' && inputs.aws_role_prd || inputs.aws_role_dev }}
+          role-to-assume: ${{ steps.role.outputs.arn }}
           aws-region: ${{ inputs.aws_region }}
 
       - name: Look up stack outputs

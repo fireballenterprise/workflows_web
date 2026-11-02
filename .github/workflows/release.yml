@@ -23,7 +23,7 @@ on:
         type: string
         default: us-east-1
       aws_role_prd:
-        description: 'IAM role ARN for prd deploys (OIDC)'
+        description: 'IAM role for prd deploys (OIDC): a bare role name (prd account) or a full ARN'
         required: true
         type: string
       stack_prd:
